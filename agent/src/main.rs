@@ -1,0 +1,138 @@
+#![feature(ip)]
+
+use structopt::StructOpt;
+
+use anyhow::{anyhow, Context, Result};
+use futures_util::TryStreamExt;
+use regex::Regex;
+use rtnetlink::packet::rtnl;
+use std::convert::TryInto;
+use std::net::{Ipv4Addr, Ipv6Addr};
+
+use proto::strapper::{self, node_state_service_client::NodeStateServiceClient};
+
+#[derive(StructOpt)]
+struct Opt {
+    #[structopt(default_value = "http://leader.infra.ibj.io:55555", long, short)]
+    endpoint: tonic::transport::Uri,
+
+    #[structopt(long)]
+    exclude_ifaces: Vec<Regex>,
+}
+
+async fn read_hostname() -> Result<String> {
+    Ok(tokio::fs::read_to_string("/proc/sys/kernel/hostname")
+        .await
+        .context("error reading hostname")?
+        .trim_end()
+        .to_owned())
+}
+
+async fn process_ifaces(
+    handle: &rtnetlink::Handle,
+    ignore_ifaces: &Vec<Regex>,
+) -> Result<Vec<strapper::Interface>> {
+    let mut ret = Vec::new();
+    let mut interfaces = handle.link().get().execute();
+
+    'outer: while let Some(r) = interfaces
+        .try_next()
+        .await
+        .context("error listing interfaces")?
+    {
+        let mut i_name = None;
+        let mut i_perm_mac = None;
+        for nla in r.nlas.into_iter() {
+            match nla {
+                rtnl::link::nlas::Nla::IfName(name) => {
+                    if ignore_ifaces.iter().any(|r| r.is_match(&name)) {
+                        continue 'outer;
+                    }
+                    i_name = Some(name);
+                }
+                rtnl::link::nlas::Nla::Address(addr) => {
+                    let mac = eui48::MacAddress::from_bytes(&addr)?;
+                    i_perm_mac = Some(mac.to_hex_string());
+                }
+                _ => {}
+            };
+        }
+
+        if let Some((name, mac)) = i_name.zip(i_perm_mac) {
+            let mut iface = strapper::Interface {
+                name: name,
+                mac: mac,
+                ipaddr: Vec::new(),
+            };
+            addresses_for_iface_idx(handle, r.header.index, &mut iface.ipaddr)
+                .await
+                .context("failed to list addresses for iface")?;
+            if !iface.ipaddr.is_empty() {
+                ret.push(iface)
+            }
+        }
+    }
+
+    Ok(ret)
+}
+
+async fn addresses_for_iface_idx(
+    handle: &rtnetlink::Handle,
+    idx: u32,
+    addr_vec: &mut Vec<String>,
+) -> Result<()> {
+    let mut addrs = handle.address().get().set_link_index_filter(idx).execute();
+    let a = addrs
+        .try_next()
+        .await
+        .context("address lookup failed")?
+        .ok_or(anyhow!("link does not have address entries"))?;
+    for nla in a.nlas.into_iter() {
+        if let rtnl::address::nlas::Nla::Address(addr) = nla {
+            addr_vec.push(if addr.len() == 16 {
+                let a: [u8; 16] = addr.as_slice().try_into().unwrap();
+                let addr = Ipv6Addr::from(a);
+                if !addr.is_global() {
+                    continue;
+                }
+                addr.to_string()
+            } else if addr.len() == 4 {
+                let a: [u8; 4] = addr.as_slice().try_into().unwrap();
+                let addr = Ipv4Addr::from(a);
+                if !(addr.is_private() || addr.is_global()) {
+                    continue;
+                }
+                addr.to_string()
+            } else {
+                return Err(anyhow!("non-recognized address format"));
+            });
+        }
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let opt = Opt::from_args();
+
+    let (connection, handle, _) = rtnetlink::new_connection()?;
+
+    tokio::spawn(connection);
+    let (hostname, ifaces) = tokio::try_join!(
+        read_hostname(),
+        process_ifaces(&handle, &opt.exclude_ifaces)
+    )?;
+
+    println!("{}: {:?}", hostname, ifaces);
+
+    let mut client = NodeStateServiceClient::connect(opt.endpoint).await?;
+
+    client
+        .advertise(strapper::NodeAdvertisement {
+            hostname,
+            interfaces: ifaces,
+        })
+        .await?;
+
+    Ok(())
+}

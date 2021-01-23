@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package strapper;
+
+
+
+message Interface {
+	string name = 1;
+	string mac = 2;
+	repeated string ipaddr = 3;
+}
+
+message NodeAdvertisement {
+	string hostname = 1;
+	repeated Interface interfaces = 2;
+}
+
+service NodeStateService {
+	rpc Advertise(NodeAdvertisement) returns (google.protobuf.Empty);
+}
