@@ -64,9 +64,12 @@ async fn process_ifaces(
                 mac: mac,
                 ipaddr: Vec::new(),
             };
-            addresses_for_iface_idx(handle, r.header.index, &mut iface.ipaddr)
+            addresses_for_iface_idx(handle, r.header.index, libc::AF_INET6 as u8, &mut iface.ipaddr)
                 .await
-                .context("failed to list addresses for iface")?;
+                .context("failed to list addresses for iface ipv6")?;
+            addresses_for_iface_idx(handle, r.header.index, libc::AF_INET as u8, &mut iface.ipaddr)
+                .await
+                .context("failed to list addresses for iface ipv4")?;
             if !iface.ipaddr.is_empty() {
                 ret.push(iface)
             }
@@ -79,9 +82,12 @@ async fn process_ifaces(
 async fn addresses_for_iface_idx(
     handle: &rtnetlink::Handle,
     idx: u32,
+    af: u8,
     addr_vec: &mut Vec<String>,
 ) -> Result<()> {
-    let mut addrs = handle.address().get().set_link_index_filter(idx).execute();
+    let mut message = handle.address().get().set_link_index_filter(idx);
+    message.message_mut().header.family = af;
+    let mut addrs = message.execute();
     let a = addrs
         .try_next()
         .await
@@ -106,6 +112,7 @@ async fn addresses_for_iface_idx(
             } else {
                 return Err(anyhow!("non-recognized address format"));
             });
+        } else {
         }
     }
     Ok(())
