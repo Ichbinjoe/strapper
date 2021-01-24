@@ -64,12 +64,22 @@ async fn process_ifaces(
                 mac: mac,
                 ipaddr: Vec::new(),
             };
-            addresses_for_iface_idx(handle, r.header.index, libc::AF_INET6 as u8, &mut iface.ipaddr)
-                .await
-                .context("failed to list addresses for iface ipv6")?;
-            addresses_for_iface_idx(handle, r.header.index, libc::AF_INET as u8, &mut iface.ipaddr)
-                .await
-                .context("failed to list addresses for iface ipv4")?;
+            addresses_for_iface_idx(
+                handle,
+                r.header.index,
+                libc::AF_INET6 as u8,
+                &mut iface.ipaddr,
+            )
+            .await
+            .context("failed to list addresses for iface ipv6")?;
+            addresses_for_iface_idx(
+                handle,
+                r.header.index,
+                libc::AF_INET as u8,
+                &mut iface.ipaddr,
+            )
+            .await
+            .context("failed to list addresses for iface ipv4")?;
             if !iface.ipaddr.is_empty() {
                 ret.push(iface)
             }
@@ -88,11 +98,10 @@ async fn addresses_for_iface_idx(
     let mut message = handle.address().get().set_link_index_filter(idx);
     message.message_mut().header.family = af;
     let mut addrs = message.execute();
-    let a = addrs
-        .try_next()
-        .await
-        .context("address lookup failed")?
-        .ok_or(anyhow!("link does not have address entries"))?;
+    let a = match addrs.try_next().await.context("address lookup failed")? {
+        Some(a) => a,
+        None => return Ok(()),
+    };
     for nla in a.nlas.into_iter() {
         if let rtnl::address::nlas::Nla::Address(addr) = nla {
             addr_vec.push(if addr.len() == 16 {

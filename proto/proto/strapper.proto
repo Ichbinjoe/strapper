@@ -4,8 +4,6 @@ import "google/protobuf/empty.proto";
 
 package strapper;
 
-
-
 message Interface {
 	string name = 1;
 	string mac = 2;
