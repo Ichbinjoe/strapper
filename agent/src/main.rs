@@ -143,12 +143,19 @@ async fn main() -> Result<()> {
 
     let mut client = NodeStateServiceClient::connect(opt.endpoint).await?;
 
-    client
-        .advertise(strapper::NodeAdvertisement {
-            hostname,
-            interfaces: ifaces,
-        })
-        .await?;
+    let advertisement = strapper::NodeAdvertisement {
+        hostname,
+        interfaces: ifaces,
+    };
+    loop {
+        let result = client.advertise(advertisement.clone()).await;
+
+        if let Ok(_) = result {
+            break;
+        }
+        println!("advertise failed, trying again in 1min");
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+    }
 
     Ok(())
 }
