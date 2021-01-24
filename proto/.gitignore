@@ -1,3 +1,4 @@
-/src
+/src/strapper.rs
+/src/google.protobuf.rs
 /target
 Cargo.lock
