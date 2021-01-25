@@ -127,6 +127,12 @@ async fn addresses_for_iface_idx(
     Ok(())
 }
 
+async fn advertise(endpoint: tonic::transport::Uri, advertisement: strapper::NodeAdvertisement) -> Result<()> {
+    let mut client = NodeStateServiceClient::connect(endpoint).await?;
+    client.advertise(advertisement.clone()).await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let opt = Opt::from_args();
@@ -141,20 +147,18 @@ async fn main() -> Result<()> {
 
     println!("{}: {:?}", hostname, ifaces);
 
-    let mut client = NodeStateServiceClient::connect(opt.endpoint).await?;
-
     let advertisement = strapper::NodeAdvertisement {
         hostname,
         interfaces: ifaces,
     };
     loop {
-        let result = client.advertise(advertisement.clone()).await;
-
-        if let Ok(_) = result {
-            break;
+        match advertise(opt.endpoint.clone(), advertisement.clone()).await {
+            Ok(_) => break,
+            Err(e) => {
+                println!("advertise failed ({}), trying again in 1min", e);
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            }
         }
-        println!("advertise failed, trying again in 1min");
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
     }
 
     Ok(())
