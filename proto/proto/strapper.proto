@@ -20,7 +20,7 @@ message PublicKeys {
 message NodeAdvertisement {
 	string hostname = 1;
 	repeated Interface interfaces = 2;
-	repeated PublicKeys pubkeys = 3;
+	PublicKeys pubkeys = 3;
 }
 
 service NodeStateService {
