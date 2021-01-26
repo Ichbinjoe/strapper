@@ -7,9 +7,13 @@ use futures_util::TryStreamExt;
 use regex::Regex;
 use rtnetlink::packet::rtnl;
 use std::convert::TryInto;
+use std::str;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use sha2::{Sha256, Digest};
+use pretty_hex::*;
+
+extern crate base64;
 
 use proto::strapper::{self, node_state_service_client::NodeStateServiceClient};
 
@@ -50,8 +54,11 @@ async fn read_ssh_pub_host_key(String key_location) -> Result<String> {
         .split(" ")
         .nth(1)
         .to_owned()
-    //TODO: Base64 decode, sha256 fingerprint(get hex)(dump to hex function)(unhex on server and check length of sha hash to be proper), then send that over to the central server
-    //TODO: On central server map the algo type -> proper powerdns record type format for sshfp
+    let pub_key_decoded = base64::decode(public_key).unwrap()
+    let mut sha256_hasher = Shae256::new()
+    sha256_hasher.update(pub_key_decoded)
+    let hashed_result = sha256_hasher.finalize()
+    Ok(str::from_utf8(simple_hex(&hashed_result)).chars().filter(|c| !c.is_whitespace()).collect())
 }
 
 fn match_ssh_pub_entry(keys: &HashMap<String, String>, key_type: str, pub_entry: Result<String>) {

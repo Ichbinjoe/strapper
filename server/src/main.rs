@@ -110,9 +110,15 @@ impl FromStr for Remapper {
     }
 }
 
+struct KeySignature {
+    algorithm_type: u8,
+    fingerprint_type: u8,
+}
+
 struct NSServer {
     pdns: PdnsApi,
     remappers: Vec<Remapper>,
+    sshfpmap: HashMap<String, KeySignature>
 }
 
 #[tonic::async_trait]
@@ -179,10 +185,39 @@ impl NodeStateService for NSServer {
     }
 }
 
+//todo check hashlength to be proper
+fn add_to_sshfpmap(sshfpmap: &HashMap<String, KeySignature>, key_type: str) {
+    match key_type {
+        "rsa" => sshfpmap.insert(key_type.to_string(), KeySignature {
+            algorithm_type: 1,
+            fingerprint_type: 2,
+        }),
+        "dsa" => sshfpmap.insert("dsa".to_string(), KeySignature {
+            algorithm_type: 2,
+            fingerprint_type: 2,
+        }),
+        "ecdsa" => sshfpmap.insert("ecdsa".to_string(), KeySignature {
+            algorithm_type: 3,
+            fingerprint_type: 2,
+        }),
+        "ed25519" => sshfpmap.insert("ed25519".to_string(), KeySignature {
+            algorithm_type: 4,
+            fingerprint_type: 2,
+        }),
+        _ => println!("Invalid key_type provided: {}", key_type),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
     let opt = Opt::from_args();
+
+    let mut sshfpmap = HashMap::new();
+    add_to_sshfpmap(&sshfpmap, "rsa");
+    add_to_sshfpmap(&sshfpmap, "dsa");
+    add_to_sshfpmap(&sshfpmap, "ecdsa");
+    add_to_sshfpmap(&sshfpmap, "ed25519");
 
     let nssserver = NSServer {
         pdns: PdnsApi {
@@ -192,6 +227,7 @@ async fn main() -> Result<()> {
             key: opt.pdns_api_key,
         },
         remappers: opt.remappers,
+        sshfpmap: sshfpmap,
     };
 
     info!("service node state service on {}", opt.bind);
