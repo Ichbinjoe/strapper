@@ -8,7 +8,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use tonic::transport::Server;
 use hex_literal::hex;
-use sha2::{Sha256, Digest};
 
 use proto::strapper::{
     self,

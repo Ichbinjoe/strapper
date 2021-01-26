@@ -7,7 +7,9 @@ use futures_util::TryStreamExt;
 use regex::Regex;
 use rtnetlink::packet::rtnl;
 use std::convert::TryInto;
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use sha2::{Sha256, Digest};
 
 use proto::strapper::{self, node_state_service_client::NodeStateServiceClient};
 
@@ -20,16 +22,16 @@ struct Opt {
     exclude_ifaces: Vec<Regex>,
     
     #[structopt(default_value = "/etc/ssh/ssh_host_rsa_key.pub", long, short="rsa")]
-    rsa_key: String,
+    rsa_pub_key: String,
 
     #[structopt(default_value = "/etc/ssh/ssh_host_dsa_key.pub", long, short="dsa")]
-    dsa_key: String,
+    dsa_pub_key: String,
 
     #[structopt(default_value = "/etc/ssh/ssh_host_ecdsa_key.pub", long, short="ec")]
-    ecdsa_key: String,
+    ecdsa_pub_key: String,
 
     #[structopt(default_value = "/etc/ssh/ssh_host_ed25519_key.pub", long, short="ed")]
-    ed25519_key: String,
+    ed25519_pub_key: String,
 }
 
 async fn read_hostname() -> Result<String> {
@@ -40,32 +42,39 @@ async fn read_hostname() -> Result<String> {
         .to_owned())
 }
 
-async fn read_ssh_host_keys(String rsa, String dsa, String ecdsa, String ed25519) -> Result<Vector<String>> {
-    let mut keys = Vec::new();
-    
-    keys.push(tokio::fs::read_to_string(rsa)
+async fn read_ssh_pub_host_key(String key_location) -> Result<String> {
+    let public_key = tokio::fs::read_to_string(key_location)
         .await
-        .context("error reading rsa_pub key")?
+        .context("error reading pub key")?
         .trim_end()
-        .to_owned())
+        .split(" ")
+        .nth(1)
+        .to_owned()
+    //TODO: Base64 decode, sha256 fingerprint(get hex)(dump to hex function)(unhex on server and check length of sha hash to be proper), then send that over to the central server
+    //TODO: On central server map the algo type -> proper powerdns record type format for sshfp
+}
 
-    keys.push(tokio::fs::read_to_string(dsa)
-        .await
-        .context("error reading dsa_pub key")?
-        .trim_end()
-        .to_owned())
+fn match_ssh_pub_entry(keys: &HashMap<String, String>, key_type: str, pub_entry: Result<String>) {
+    match pub_entry {
+        Ok(pub_key) =>  keys.insert(key_type.to_string(), pub_key),
+        Err(e) => println!("Error when reading {}_pub_key: {:?}", key_type, e) 
+    }
+} 
 
-    keys.push(tokio::fs::read_to_string(ecdsa)
-        .await
-        .context("error reading ecdsa_pub key")?
-        .trim_end()
-        .to_owned())
+async fn read_ssh_host_keys(rsa: String, dsa: String, ecdsa: String, ed25519: String) -> Result<HashMap<String, String>> {
+    let mut keys = HashMap::new();
 
-    keys.push(tokio::fs::read_to_string(ed25519)
-        .await
-        .context("error reading ed25519_pub key")?
-        .trim_end()
-        .to_owned())
+    let (rsa_entry, dsa_entry, ecdsa_entry, ed25519_entry) = tokio::join!(
+        read_ssh_pub_host_key(rsa),
+        read_ssh_pub_host_key(dsa),
+        read_ssh_pub_host_key(ecdsa),
+        read_ssh_pub_host_key(ed25519)
+    )
+
+    match_ssh_pub_entry(keys, "rsa", rsa_entry)
+    match_ssh_pub_entry(keys, "dsa", dsa_entry)
+    match_ssh_pub_entry(keys, "ecdsa", ecdsa_entry)
+    match_ssh_pub_entry(keys, "ed25519", ed25519_entry)
 
     Ok(keys)
 }
@@ -185,7 +194,7 @@ async fn main() -> Result<()> {
     let (hostname, ifaces, keys) = tokio::try_join!(
         read_hostname(),
         process_ifaces(&handle, &opt.exclude_ifaces),
-        read_ssh_host_keys(opt.rsa_key, opt.dsa_key, opt.ecdsa_key, opt.ed25519_key)
+        read_ssh_host_keys(opt.rsa_pub_key, opt.dsa_pub_key, opt.ecdsa_pub_key, opt.ed25519_pub_key)
     )?;
 
     println!("{}: {:?}", hostname, ifaces);
