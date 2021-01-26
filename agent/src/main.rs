@@ -55,7 +55,7 @@ async fn read_ssh_pub_host_key(String key_location) -> Result<String> {
         .nth(1)
         .to_owned()
     let pub_key_decoded = base64::decode(public_key).unwrap()
-    let mut sha256_hasher = Shae256::new()
+    let mut sha256_hasher = Sha256::new()
     sha256_hasher.update(pub_key_decoded)
     let hashed_result = sha256_hasher.finalize()
     Ok(str::from_utf8(simple_hex(&hashed_result)).chars().filter(|c| !c.is_whitespace()).collect())
