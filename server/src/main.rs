@@ -195,7 +195,7 @@ fn insert_sshfp(sshfpmap: &HashMap<String, KeySignature>, key_type: str, algorit
 fn add_to_sshfpmap(sshfpmap: &HashMap<String, KeySignature>, key_type: str) {
     match key_type {
         "rsa" => insert_sshfp(sshfpmap, "rsa", 1, 2),
-        "dsa" => insert_sshfp(sshfpmap, "rda", 2, 2),
+        "dsa" => insert_sshfp(sshfpmap, "dsa", 2, 2),
         "ecdsa" => insert_sshfp(sshfpmap, "ecdsa", 3, 2),
         "ed25519" => insert_sshfp(sshfpmap, "ed25519", 4, 2),
         _ => println!("Invalid key_type provided: {}", key_type),
