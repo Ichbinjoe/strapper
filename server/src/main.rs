@@ -185,25 +185,19 @@ impl NodeStateService for NSServer {
     }
 }
 
+fn insert_sshfp(sshfpmap: &HashMap<String, KeySignature>, key_type: str, algorithm: u8, fingerprint: u8) {
+    sshfpmap.insert(key_type.to_string(), KeySignature {
+        algorithm_type: algorithm,
+        fingerprint_type: fingerprint,
+    })
+}
 //todo check hashlength to be proper
 fn add_to_sshfpmap(sshfpmap: &HashMap<String, KeySignature>, key_type: str) {
     match key_type {
-        "rsa" => sshfpmap.insert(key_type.to_string(), KeySignature {
-            algorithm_type: 1,
-            fingerprint_type: 2,
-        }),
-        "dsa" => sshfpmap.insert("dsa".to_string(), KeySignature {
-            algorithm_type: 2,
-            fingerprint_type: 2,
-        }),
-        "ecdsa" => sshfpmap.insert("ecdsa".to_string(), KeySignature {
-            algorithm_type: 3,
-            fingerprint_type: 2,
-        }),
-        "ed25519" => sshfpmap.insert("ed25519".to_string(), KeySignature {
-            algorithm_type: 4,
-            fingerprint_type: 2,
-        }),
+        "rsa" => insert_sshfp(sshfpmap, "rsa", 1, 2),
+        "dsa" => insert_sshfp(sshfpmap, "rda", 2, 2),
+        "ecdsa" => insert_sshfp(sshfpmap, "ecdsa", 3, 2),
+        "ed25519" => insert_sshfp(sshfpmap, "ed25519", 4, 2),
         _ => println!("Invalid key_type provided: {}", key_type),
     }
 }
