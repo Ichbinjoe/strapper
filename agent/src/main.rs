@@ -18,6 +18,18 @@ struct Opt {
 
     #[structopt(long)]
     exclude_ifaces: Vec<Regex>,
+    
+    #[structopt(default_value = "/etc/ssh/ssh_host_rsa_key.pub", long, short="rsa")]
+    rsa_key: String,
+
+    #[structopt(default_value = "/etc/ssh/ssh_host_dsa_key.pub", long, short="dsa")]
+    dsa_key: String,
+
+    #[structopt(default_value = "/etc/ssh/ssh_host_ecdsa_key.pub", long, short="ec")]
+    ecdsa_key: String,
+
+    #[structopt(default_value = "/etc/ssh/ssh_host_ed25519_key.pub", long, short="ed")]
+    ed25519_key: String,
 }
 
 async fn read_hostname() -> Result<String> {
@@ -26,6 +38,36 @@ async fn read_hostname() -> Result<String> {
         .context("error reading hostname")?
         .trim_end()
         .to_owned())
+}
+
+async fn read_ssh_host_keys(String rsa, String dsa, String ecdsa, String ed25519) -> Result<Vector<String>> {
+    let mut keys = Vec::new();
+    
+    keys.push(tokio::fs::read_to_string(rsa)
+        .await
+        .context("error reading rsa_pub key")?
+        .trim_end()
+        .to_owned())
+
+    keys.push(tokio::fs::read_to_string(dsa)
+        .await
+        .context("error reading dsa_pub key")?
+        .trim_end()
+        .to_owned())
+
+    keys.push(tokio::fs::read_to_string(ecdsa)
+        .await
+        .context("error reading ecdsa_pub key")?
+        .trim_end()
+        .to_owned())
+
+    keys.push(tokio::fs::read_to_string(ed25519)
+        .await
+        .context("error reading ed25519_pub key")?
+        .trim_end()
+        .to_owned())
+
+    Ok(keys)
 }
 
 async fn process_ifaces(
@@ -140,16 +182,19 @@ async fn main() -> Result<()> {
     let (connection, handle, _) = rtnetlink::new_connection()?;
 
     tokio::spawn(connection);
-    let (hostname, ifaces) = tokio::try_join!(
+    let (hostname, ifaces, keys) = tokio::try_join!(
         read_hostname(),
-        process_ifaces(&handle, &opt.exclude_ifaces)
+        process_ifaces(&handle, &opt.exclude_ifaces),
+        read_ssh_host_keys(opt.rsa_key, opt.dsa_key, opt.ecdsa_key, opt.ed25519_key)
     )?;
 
     println!("{}: {:?}", hostname, ifaces);
+    println!("Keys: {:?}", keys);
 
     let advertisement = strapper::NodeAdvertisement {
         hostname,
         interfaces: ifaces,
+        pubkeys: keys
     };
     loop {
         match advertise(opt.endpoint.clone(), advertisement.clone()).await {
