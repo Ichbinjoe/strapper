@@ -10,17 +10,10 @@ message Interface {
 	repeated string ipaddr = 3;
 }
 
-message PublicKeys {
-	string rsa = 1;
-	string dsa = 2;
-	string ecdsa = 3;
-	string ed25519 = 4;
-}
-
 message NodeAdvertisement {
 	string hostname = 1;
 	repeated Interface interfaces = 2;
-	PublicKeys pubkeys = 3;
+	map<string, string> keys = 3;
 }
 
 service NodeStateService {
