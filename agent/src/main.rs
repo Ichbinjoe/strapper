@@ -11,7 +11,6 @@ use std::str;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use sha2::{Sha256, Digest};
-use pretty_hex::*;
 
 extern crate base64;
 
@@ -46,26 +45,27 @@ async fn read_hostname() -> Result<String> {
         .to_owned())
 }
 
-async fn read_ssh_pub_host_key(String key_location) -> Result<String> {
-    let public_key = tokio::fs::read_to_string(key_location)
-        .await
+async fn read_ssh_pub_host_key(key_location: String) -> Result<String> {
+    Ok(str::from_utf8(&Sha256::digest(&base64::decode(tokio::fs::read_to_string(key_location).await
         .context("error reading pub key")?
         .trim_end()
         .split(" ")
         .nth(1)
         .to_owned()
-    let pub_key_decoded = base64::decode(public_key).unwrap()
-    let mut sha256_hasher = Sha256::new()
-    sha256_hasher.update(pub_key_decoded)
-    let hashed_result = sha256_hasher.finalize()
-    Ok(str::from_utf8(simple_hex(&hashed_result)).chars().filter(|c| !c.is_whitespace()).collect())
+        .unwrap()
+        .as_bytes())
+        .unwrap())[..])
+        .unwrap()
+        .to_string())
 }
 
-fn match_ssh_pub_entry(keys: &HashMap<String, String>, key_type: str, pub_entry: Result<String>) {
+fn match_ssh_pub_entry(keys: &mut HashMap<String, String>, key_type: &str, pub_entry: Result<String>) {
     match pub_entry {
-        Ok(pub_key) =>  keys.insert(key_type.to_string(), pub_key),
-        Err(e) => println!("Error when reading {}_pub_key: {:?}", key_type, e) 
-    }
+        Ok(pub_key) => { 
+            keys.insert(key_type.to_string(), pub_key);
+        },
+        Err(e) => println!("Error when reading {}_pub_key: {:?}", key_type, e),
+    };
 } 
 
 async fn read_ssh_host_keys(rsa: String, dsa: String, ecdsa: String, ed25519: String) -> Result<HashMap<String, String>> {
@@ -76,12 +76,12 @@ async fn read_ssh_host_keys(rsa: String, dsa: String, ecdsa: String, ed25519: St
         read_ssh_pub_host_key(dsa),
         read_ssh_pub_host_key(ecdsa),
         read_ssh_pub_host_key(ed25519)
-    )
+    );
 
-    match_ssh_pub_entry(keys, "rsa", rsa_entry)
-    match_ssh_pub_entry(keys, "dsa", dsa_entry)
-    match_ssh_pub_entry(keys, "ecdsa", ecdsa_entry)
-    match_ssh_pub_entry(keys, "ed25519", ed25519_entry)
+    match_ssh_pub_entry(&mut keys, "rsa", rsa_entry);
+    match_ssh_pub_entry(&mut keys, "dsa", dsa_entry);
+    match_ssh_pub_entry(&mut keys, "ecdsa", ecdsa_entry);
+    match_ssh_pub_entry(&mut keys, "ed25519", ed25519_entry);
 
     Ok(keys)
 }
@@ -210,7 +210,7 @@ async fn main() -> Result<()> {
     let advertisement = strapper::NodeAdvertisement {
         hostname,
         interfaces: ifaces,
-        pubkeys: keys
+        keys: keys
     };
     loop {
         match advertise(opt.endpoint.clone(), advertisement.clone()).await {

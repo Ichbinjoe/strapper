@@ -191,6 +191,7 @@ fn insert_sshfp(sshfpmap: &HashMap<String, KeySignature>, key_type: str, algorit
         fingerprint_type: fingerprint,
     })
 }
+
 //todo check hashlength to be proper
 fn add_to_sshfpmap(sshfpmap: &HashMap<String, KeySignature>, key_type: str) {
     match key_type {
