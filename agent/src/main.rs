@@ -45,7 +45,7 @@ async fn read_hostname() -> Result<String> {
         .to_owned())
 }
 
-async fn read_ssh_pub_host_key(key_location: String) -> Result<String> {
+async fn read_ssh_fp(key_location: String) -> Result<String> {
     Ok(str::from_utf8(&Sha256::digest(&base64::decode(tokio::fs::read_to_string(key_location).await
         .context("error reading pub key")?
         .trim_end()
@@ -59,7 +59,7 @@ async fn read_ssh_pub_host_key(key_location: String) -> Result<String> {
         .to_string())
 }
 
-fn match_ssh_pub_entry(keys: &mut HashMap<String, String>, key_type: &str, pub_entry: Result<String>) {
+fn match_ssh_fp(keys: &mut HashMap<String, String>, key_type: &str, pub_entry: Result<String>) {
     match pub_entry {
         Ok(pub_key) => { 
             keys.insert(key_type.to_string(), pub_key);
@@ -68,20 +68,20 @@ fn match_ssh_pub_entry(keys: &mut HashMap<String, String>, key_type: &str, pub_e
     };
 } 
 
-async fn read_ssh_host_keys(rsa: String, dsa: String, ecdsa: String, ed25519: String) -> Result<HashMap<String, String>> {
+async fn get_ssh_fp(rsa: String, dsa: String, ecdsa: String, ed25519: String) -> Result<HashMap<String, String>> {
     let mut keys = HashMap::new();
 
     let (rsa_entry, dsa_entry, ecdsa_entry, ed25519_entry) = tokio::join!(
-        read_ssh_pub_host_key(rsa),
-        read_ssh_pub_host_key(dsa),
-        read_ssh_pub_host_key(ecdsa),
-        read_ssh_pub_host_key(ed25519)
+        read_ssh_fp(rsa),
+        read_ssh_fp(dsa),
+        read_ssh_fp(ecdsa),
+        read_ssh_fp(ed25519)
     );
 
-    match_ssh_pub_entry(&mut keys, "rsa", rsa_entry);
-    match_ssh_pub_entry(&mut keys, "dsa", dsa_entry);
-    match_ssh_pub_entry(&mut keys, "ecdsa", ecdsa_entry);
-    match_ssh_pub_entry(&mut keys, "ed25519", ed25519_entry);
+    match_ssh_fp(&mut keys, "rsa", rsa_entry);
+    match_ssh_fp(&mut keys, "dsa", dsa_entry);
+    match_ssh_fp(&mut keys, "ecdsa", ecdsa_entry);
+    match_ssh_fp(&mut keys, "ed25519", ed25519_entry);
 
     Ok(keys)
 }
@@ -198,19 +198,19 @@ async fn main() -> Result<()> {
     let (connection, handle, _) = rtnetlink::new_connection()?;
 
     tokio::spawn(connection);
-    let (hostname, ifaces, keys) = tokio::try_join!(
+    let (hostname, ifaces, sshfp) = tokio::try_join!(
         read_hostname(),
         process_ifaces(&handle, &opt.exclude_ifaces),
-        read_ssh_host_keys(opt.rsa_pub_key, opt.dsa_pub_key, opt.ecdsa_pub_key, opt.ed25519_pub_key)
+        get_ssh_fp(opt.rsa_pub_key, opt.dsa_pub_key, opt.ecdsa_pub_key, opt.ed25519_pub_key)
     )?;
 
     println!("{}: {:?}", hostname, ifaces);
-    println!("Keys: {:?}", keys);
+    println!("FingerPrints: {:?}", sshfp);
 
     let advertisement = strapper::NodeAdvertisement {
         hostname,
         interfaces: ifaces,
-        keys: keys
+        sshfp: sshfp
     };
     loop {
         match advertise(opt.endpoint.clone(), advertisement.clone()).await {
