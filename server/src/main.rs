@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use tonic::transport::Server;
+use hex_literal::hex;
 
 use proto::strapper::{
     self,
@@ -109,9 +110,15 @@ impl FromStr for Remapper {
     }
 }
 
+struct KeySignature {
+    algorithm_type: u8,
+    fingerprint_type: u8,
+}
+
 struct NSServer {
     pdns: PdnsApi,
     remappers: Vec<Remapper>,
+    sshfpmap: HashMap<String, KeySignature>
 }
 
 #[tonic::async_trait]
@@ -178,10 +185,34 @@ impl NodeStateService for NSServer {
     }
 }
 
+fn insert_sshfp(sshfpmap: &HashMap<String, KeySignature>, key_type: str, algorithm: u8, fingerprint: u8) {
+    sshfpmap.insert(key_type.to_string(), KeySignature {
+        algorithm_type: algorithm,
+        fingerprint_type: fingerprint,
+    })
+}
+
+//todo check hashlength to be proper
+fn add_to_sshfpmap(sshfpmap: &HashMap<String, KeySignature>, key_type: str) {
+    match key_type {
+        "rsa" => insert_sshfp(sshfpmap, "rsa", 1, 2),
+        "dsa" => insert_sshfp(sshfpmap, "dsa", 2, 2),
+        "ecdsa" => insert_sshfp(sshfpmap, "ecdsa", 3, 2),
+        "ed25519" => insert_sshfp(sshfpmap, "ed25519", 4, 2),
+        _ => println!("Invalid key_type provided: {}", key_type),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
     let opt = Opt::from_args();
+
+    let mut sshfpmap = HashMap::new();
+    add_to_sshfpmap(&sshfpmap, "rsa");
+    add_to_sshfpmap(&sshfpmap, "dsa");
+    add_to_sshfpmap(&sshfpmap, "ecdsa");
+    add_to_sshfpmap(&sshfpmap, "ed25519");
 
     let nssserver = NSServer {
         pdns: PdnsApi {
@@ -191,6 +222,7 @@ async fn main() -> Result<()> {
             key: opt.pdns_api_key,
         },
         remappers: opt.remappers,
+        sshfpmap: sshfpmap,
     };
 
     info!("service node state service on {}", opt.bind);

@@ -18,3 +18,5 @@ structopt = "0.3"
 rtnetlink = "0.7"
 proto = { path = "../proto" }
 libc = "0.2.82"
+sha2 = "0.9.2"
+base64 = "0.13.0"

@@ -7,7 +7,12 @@ use futures_util::TryStreamExt;
 use regex::Regex;
 use rtnetlink::packet::rtnl;
 use std::convert::TryInto;
+use std::str;
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use sha2::{Sha256, Digest};
+
+extern crate base64;
 
 use proto::strapper::{self, node_state_service_client::NodeStateServiceClient};
 
@@ -18,6 +23,18 @@ struct Opt {
 
     #[structopt(long)]
     exclude_ifaces: Vec<Regex>,
+    
+    #[structopt(default_value = "/etc/ssh/ssh_host_rsa_key.pub", long, short="rsa")]
+    rsa_pub_key: String,
+
+    #[structopt(default_value = "/etc/ssh/ssh_host_dsa_key.pub", long, short="dsa")]
+    dsa_pub_key: String,
+
+    #[structopt(default_value = "/etc/ssh/ssh_host_ecdsa_key.pub", long, short="ec")]
+    ecdsa_pub_key: String,
+
+    #[structopt(default_value = "/etc/ssh/ssh_host_ed25519_key.pub", long, short="ed")]
+    ed25519_pub_key: String,
 }
 
 async fn read_hostname() -> Result<String> {
@@ -26,6 +43,47 @@ async fn read_hostname() -> Result<String> {
         .context("error reading hostname")?
         .trim_end()
         .to_owned())
+}
+
+async fn read_ssh_fp(key_location: String) -> Result<String> {
+    Ok(str::from_utf8(&Sha256::digest(&base64::decode(tokio::fs::read_to_string(key_location).await
+        .context("error reading pub key")?
+        .trim_end()
+        .split(" ")
+        .nth(1)
+        .to_owned()
+        .unwrap()
+        .as_bytes())
+        .unwrap())[..])
+        .unwrap()
+        .to_string())
+}
+
+fn match_ssh_fp(keys: &mut HashMap<String, String>, key_type: &str, pub_entry: Result<String>) {
+    match pub_entry {
+        Ok(pub_key) => { 
+            keys.insert(key_type.to_string(), pub_key);
+        },
+        Err(e) => println!("Error when reading {}_pub_key: {:?}", key_type, e),
+    };
+} 
+
+async fn get_ssh_fp(rsa: String, dsa: String, ecdsa: String, ed25519: String) -> Result<HashMap<String, String>> {
+    let mut keys = HashMap::new();
+
+    let (rsa_entry, dsa_entry, ecdsa_entry, ed25519_entry) = tokio::join!(
+        read_ssh_fp(rsa),
+        read_ssh_fp(dsa),
+        read_ssh_fp(ecdsa),
+        read_ssh_fp(ed25519)
+    );
+
+    match_ssh_fp(&mut keys, "rsa", rsa_entry);
+    match_ssh_fp(&mut keys, "dsa", dsa_entry);
+    match_ssh_fp(&mut keys, "ecdsa", ecdsa_entry);
+    match_ssh_fp(&mut keys, "ed25519", ed25519_entry);
+
+    Ok(keys)
 }
 
 async fn process_ifaces(
@@ -140,16 +198,19 @@ async fn main() -> Result<()> {
     let (connection, handle, _) = rtnetlink::new_connection()?;
 
     tokio::spawn(connection);
-    let (hostname, ifaces) = tokio::try_join!(
+    let (hostname, ifaces, sshfp) = tokio::try_join!(
         read_hostname(),
-        process_ifaces(&handle, &opt.exclude_ifaces)
+        process_ifaces(&handle, &opt.exclude_ifaces),
+        get_ssh_fp(opt.rsa_pub_key, opt.dsa_pub_key, opt.ecdsa_pub_key, opt.ed25519_pub_key)
     )?;
 
     println!("{}: {:?}", hostname, ifaces);
+    println!("FingerPrints: {:?}", sshfp);
 
     let advertisement = strapper::NodeAdvertisement {
         hostname,
         interfaces: ifaces,
+        sshfp: sshfp
     };
     loop {
         match advertise(opt.endpoint.clone(), advertisement.clone()).await {
