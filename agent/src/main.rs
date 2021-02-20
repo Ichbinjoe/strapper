@@ -171,10 +171,12 @@ fn main() -> Result<()> {
 
     rt.block_on(run_advertise(&opt))?;
 
+    println!("notifying systemd of 'ready' state...");
     while !systemd::daemon::notify(false, [(systemd::daemon::STATE_READY, "1")].iter())? {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
+    println!("done. sleeping forever.");
     // If the process is running for 20 years, that's just straight up insane.
     // If this returns early, assume something else woke it up.
     std::thread::sleep(std::time::Duration::from_secs(60 * 60 * 24 * 365 * 20));
