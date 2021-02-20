@@ -60,8 +60,8 @@ async fn process_ifaces(
 
         if let Some((name, mac)) = i_name.zip(i_perm_mac) {
             let mut iface = strapper::Interface {
-                name: name,
-                mac: mac,
+                name,
+                mac,
                 ipaddr: Vec::new(),
             };
             addresses_for_iface_idx(
@@ -127,16 +127,16 @@ async fn addresses_for_iface_idx(
     Ok(())
 }
 
-async fn advertise(endpoint: tonic::transport::Uri, advertisement: strapper::NodeAdvertisement) -> Result<()> {
+async fn advertise(
+    endpoint: tonic::transport::Uri,
+    advertisement: strapper::NodeAdvertisement,
+) -> Result<()> {
     let mut client = NodeStateServiceClient::connect(endpoint).await?;
     client.advertise(advertisement.clone()).await?;
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let opt = Opt::from_args();
-
+async fn run_advertise(opt: &Opt) -> Result<()> {
     let (connection, handle, _) = rtnetlink::new_connection()?;
 
     tokio::spawn(connection);
@@ -160,6 +160,24 @@ async fn main() -> Result<()> {
             }
         }
     }
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let opt = Opt::from_args();
+
+    let rt = tokio::runtime::Builder::new_current_thread().build()?;
+
+    rt.block_on(run_advertise(&opt))?;
+
+    while !systemd::daemon::notify(false, [(systemd::daemon::STATE_READY, "1")].iter())? {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    // If the process is running for 20 years, that's just straight up insane.
+    // If this returns early, assume something else woke it up.
+    std::thread::sleep(std::time::Duration::from_secs(60 * 60 * 24 * 365 * 20));
 
     Ok(())
 }

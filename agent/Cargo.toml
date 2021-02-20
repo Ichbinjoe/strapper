@@ -13,8 +13,9 @@ regex = "1"
 prost = "0.6"
 eui48 = "1.1"
 futures-util="0.3.12"
-tokio = {version="1.0", features=["rt", "rt-multi-thread", "macros", "net", "fs"]}
+tokio = {version="1.0", features=["rt", "net", "fs"]}
 structopt = "0.3"
+systemd = "0.8.2"
 rtnetlink = "0.7"
 proto = { path = "../proto" }
 libc = "0.2.82"
