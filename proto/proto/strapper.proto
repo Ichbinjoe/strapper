@@ -8,6 +8,7 @@ message Interface {
 	string name = 1;
 	string mac = 2;
 	repeated string ipaddr = 3;
+	uint32 index = 4;
 }
 
 message NodeAdvertisement {

@@ -3,9 +3,11 @@
 use structopt::StructOpt;
 
 use anyhow::{anyhow, Context, Result};
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use regex::Regex;
+use rtnetlink::constants::{RTMGRP_IPV4_IFADDR, RTMGRP_IPV6_IFADDR, RTMGRP_LINK};
 use rtnetlink::packet::rtnl;
+use rtnetlink::sys::SocketAddr;
 use std::convert::TryInto;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -28,83 +30,68 @@ async fn read_hostname() -> Result<String> {
         .to_owned())
 }
 
-async fn process_ifaces(
-    handle: &rtnetlink::Handle,
-    ignore_ifaces: &Vec<Regex>,
-) -> Result<Vec<strapper::Interface>> {
-    let mut ret = Vec::new();
-    let mut interfaces = handle.link().get().execute();
-
-    'outer: while let Some(r) = interfaces
-        .try_next()
-        .await
-        .context("error listing interfaces")?
-    {
-        let mut i_name = None;
-        let mut i_perm_mac = None;
-        for nla in r.nlas.into_iter() {
-            match nla {
-                rtnl::link::nlas::Nla::IfName(name) => {
-                    if ignore_ifaces.iter().any(|r| r.is_match(&name)) {
-                        continue 'outer;
-                    }
-                    i_name = Some(name);
-                }
-                rtnl::link::nlas::Nla::Address(addr) => {
-                    let mac = eui48::MacAddress::from_bytes(&addr)?;
-                    i_perm_mac = Some(mac.to_hex_string());
-                }
-                _ => {}
-            };
-        }
-
-        if let Some((name, mac)) = i_name.zip(i_perm_mac) {
-            let mut iface = strapper::Interface {
-                name,
-                mac,
-                ipaddr: Vec::new(),
-            };
-            addresses_for_iface_idx(
-                handle,
-                r.header.index,
-                libc::AF_INET6 as u8,
-                &mut iface.ipaddr,
-            )
-            .await
-            .context("failed to list addresses for iface ipv6")?;
-            addresses_for_iface_idx(
-                handle,
-                r.header.index,
-                libc::AF_INET as u8,
-                &mut iface.ipaddr,
-            )
-            .await
-            .context("failed to list addresses for iface ipv4")?;
-            if !iface.ipaddr.is_empty() {
-                ret.push(iface)
-            }
+fn iface_for<'a>(
+    v: &'a mut Vec<strapper::Interface>,
+    addr: &rtnl::address::AddressMessage,
+) -> Option<&'a mut strapper::Interface> {
+    for i in v {
+        if i.index == addr.header.index {
+            return Some(i);
         }
     }
-
-    Ok(ret)
+    None
 }
 
-async fn addresses_for_iface_idx(
-    handle: &rtnetlink::Handle,
-    idx: u32,
-    af: u8,
-    addr_vec: &mut Vec<String>,
-) -> Result<()> {
-    let mut message = handle.address().get().set_link_index_filter(idx);
-    message.message_mut().header.family = af;
-    let mut addrs = message.execute();
-    let a = match addrs.try_next().await.context("address lookup failed")? {
-        Some(a) => a,
-        None => return Ok(()),
+fn add_addr(
+    v: &mut Vec<strapper::Interface>,
+    addr: &rtnl::address::AddressMessage,
+) -> Result<bool> {
+    process_addr_message(v, addr, |i, a| {
+        for ea in &i.ipaddr {
+            if ea == &a {
+                return false;
+            }
+        }
+
+        i.ipaddr.push(a);
+        true
+    })
+}
+
+fn del_addr(
+    v: &mut Vec<strapper::Interface>,
+    addr: &rtnl::address::AddressMessage,
+) -> Result<bool> {
+    process_addr_message(v, addr, |i, a| {
+        let mut r = false;
+        i.ipaddr.retain(|v| if v != &a {
+            true
+        } else {
+            r = true;
+            false
+        });
+        r
+    })
+}
+
+fn process_addr_message<F>(
+    v: &mut Vec<strapper::Interface>,
+    addr: &rtnl::address::AddressMessage,
+    f: F,
+) -> Result<bool>
+where
+    F: Fn(&mut strapper::Interface, String) -> bool,
+{
+    let iface = match iface_for(v, addr) {
+        Some(v) => v,
+        None => return Ok(false),
     };
-    for nla in a.nlas.into_iter() {
+
+    let mut changes = false;
+
+    for nla in addr.nlas.iter() {
         if let rtnl::address::nlas::Nla::Address(addr) = nla {
-            addr_vec.push(if addr.len() == 16 {
+            let addrstr = if addr.len() == 16 {
                 let a: [u8; 16] = addr.as_slice().try_into().unwrap();
                 let addr = Ipv6Addr::from(a);
                 if !addr.is_global() {
@@ -120,24 +107,140 @@ async fn addresses_for_iface_idx(
                 addr.to_string()
             } else {
                 return Err(anyhow!("non-recognized address format"));
-            });
-        } else {
+            };
+
+            if f(iface, addrstr) {
+                changes = true;
+            }
         }
+    }
+
+    Ok(changes)
+}
+
+fn add_iface_if_not_exists_and_not_excluded(
+    v: &mut Vec<strapper::Interface>,
+    exclude_ifaces: &Vec<Regex>,
+    l: &rtnl::link::LinkMessage,
+) -> Result<bool> {
+    let mut i_name = None;
+    let mut i_perm_mac = None;
+
+    for nla in l.nlas.iter() {
+        match nla {
+            rtnl::link::nlas::Nla::IfName(name) => {
+                for r in exclude_ifaces {
+                    if r.is_match(name) {
+                        return Ok(false);
+                    }
+                }
+
+                for iface in v.iter() {
+                    if &iface.name == name {
+                        return Ok(false);
+                    }
+                }
+                i_name = Some(name);
+            }
+            rtnl::link::nlas::Nla::Address(addr) => {
+                let mac = eui48::MacAddress::from_bytes(&addr)?;
+                i_perm_mac = Some(mac.to_hex_string());
+            }
+            _ => {}
+        };
+    }
+
+    i_name
+        .zip(i_perm_mac)
+        .map(|(name, mac)| strapper::Interface {
+            name: name.clone(),
+            mac,
+            ipaddr: Vec::new(),
+            index: l.header.index,
+        })
+        .map(|iface| {
+            v.push(iface);
+            true
+        })
+        .ok_or(anyhow!("name or mac is unexpectedly missing"))
+}
+
+async fn process_ifaces(
+    handle: &rtnetlink::Handle,
+    ignore_ifaces: &Vec<Regex>,
+) -> Result<Vec<strapper::Interface>> {
+    let mut ret = Vec::new();
+    let mut interfaces = handle.link().get().execute();
+
+    while let Some(r) = interfaces
+        .try_next()
+        .await
+        .context("error listing interfaces")?
+    {
+        add_iface_if_not_exists_and_not_excluded(&mut ret, &ignore_ifaces, &r)?;
+    }
+
+    list_addresses_for_af(handle, libc::AF_INET6 as u8, &mut ret).await?;
+    list_addresses_for_af(handle, libc::AF_INET as u8, &mut ret).await?;
+
+    Ok(ret)
+}
+
+async fn list_addresses_for_af(handle: &rtnetlink::Handle, af: u8, r: &mut Vec<strapper::Interface>) -> Result<()> {
+    let mut message = handle.address().get();
+    message.message_mut().header.family = af;
+    let mut addrs = message.execute();
+    while let Some(addr) = addrs.try_next().await.context("address lookup failed")? {
+        add_addr(r, &addr)?;
     }
     Ok(())
 }
 
 async fn advertise(
-    endpoint: tonic::transport::Uri,
-    advertisement: strapper::NodeAdvertisement,
+    endpoint: &tonic::transport::Uri,
+    advertisement: &strapper::NodeAdvertisement,
 ) -> Result<()> {
-    let mut client = NodeStateServiceClient::connect(endpoint).await?;
+    let mut client = NodeStateServiceClient::connect(endpoint.clone()).await?;
     client.advertise(advertisement.clone()).await?;
     Ok(())
 }
 
+async fn try_advertise(
+    endpoint: &tonic::transport::Uri,
+    advertisement: &strapper::NodeAdvertisement,
+) -> Result<()> {
+    for try_cnt in 0..10 {
+        match advertise(endpoint, advertisement).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                let next_try = 2_u64.pow(try_cnt);
+                println!(
+                    "advertise failed ({}, try {}), trying again in {} seconds",
+                    e, try_cnt, next_try
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(next_try)).await;
+            }
+        }
+    }
+
+    Err(anyhow!("advertise exceeded tries"))
+}
+
+fn advertise_ready() -> Result<()> {
+    println!("notifying systemd of 'ready' state...");
+    while !systemd::daemon::notify(false, [(systemd::daemon::STATE_READY, "1")].iter())? {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    Ok(())
+}
+
 async fn run_advertise(opt: &Opt) -> Result<()> {
-    let (connection, handle, _) = rtnetlink::new_connection()?;
+    let (mut connection, handle, mut messages) = rtnetlink::new_connection()?;
+
+    let addr = SocketAddr::new(0, RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR);
+
+    connection.socket_mut().bind(&addr)?;
 
     tokio::spawn(connection);
     let (hostname, ifaces) = tokio::try_join!(
@@ -147,39 +250,45 @@ async fn run_advertise(opt: &Opt) -> Result<()> {
 
     println!("{}: {:?}", hostname, ifaces);
 
-    let advertisement = strapper::NodeAdvertisement {
+    let mut advertisement = strapper::NodeAdvertisement {
         hostname,
         interfaces: ifaces,
     };
-    loop {
-        match advertise(opt.endpoint.clone(), advertisement.clone()).await {
-            Ok(_) => break,
-            Err(e) => {
-                println!("advertise failed ({}), trying again in 1min", e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-            }
+
+    try_advertise(&opt.endpoint, &advertisement).await?;
+    advertise_ready()?;
+
+    println!("Waiting for address updates.");
+
+    while let Some((message, _)) = messages.next().await {
+        let has_changes = if let rtnetlink::packet::NetlinkPayload::InnerMessage(i) = message.payload {
+            match i {
+                rtnl::RtnlMessage::NewAddress(addr) => {
+                    add_addr(&mut advertisement.interfaces, &addr)
+                },
+                rtnl::RtnlMessage::DelAddress(addr) => {
+                    del_addr(&mut advertisement.interfaces, &addr)
+                },
+                _ => Ok(false)
+            }?
+        } else { false };
+
+        if has_changes {
+            println!("Advertising address changes: {:?}", advertisement);
+            try_advertise(&opt.endpoint, &advertisement).await?;
         }
     }
-
     Ok(())
 }
 
 fn main() -> Result<()> {
     let opt = Opt::from_args();
 
-    let rt = tokio::runtime::Builder::new_current_thread().build()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()?;
 
     rt.block_on(run_advertise(&opt))?;
-
-    println!("notifying systemd of 'ready' state...");
-    while !systemd::daemon::notify(false, [(systemd::daemon::STATE_READY, "1")].iter())? {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-
-    println!("done. sleeping forever.");
-    // If the process is running for 20 years, that's just straight up insane.
-    // If this returns early, assume something else woke it up.
-    std::thread::sleep(std::time::Duration::from_secs(60 * 60 * 24 * 365 * 20));
 
     Ok(())
 }
